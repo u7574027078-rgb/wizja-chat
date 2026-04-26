@@ -10,10 +10,11 @@ interface Props {
   onFilterChange: (f: FilterPreset) => void;
   // Ref do bieżącego źródła — używany do capture klatki
   sourceRef: React.MutableRefObject<HTMLVideoElement | HTMLImageElement | null>;
+  onVideoMeta?: (durationSec: number) => void;
 }
 
 // Viewport — wideo lub obraz, z presetami CSS filter
-export function Viewport({ fileUrl, fileKind, fileName, filter, onFilterChange, sourceRef }: Props) {
+export function Viewport({ fileUrl, fileKind, fileName, filter, onFilterChange, sourceRef, onVideoMeta }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +52,10 @@ export function Viewport({ fileUrl, fileKind, fileName, filter, onFilterChange, 
             crossOrigin="anonymous"
             className="mx-auto block max-h-[60vh] w-full"
             style={{ filter: filter.filter }}
+            onLoadedMetadata={(e) => {
+              const d = (e.currentTarget as HTMLVideoElement).duration;
+              if (isFinite(d) && d > 0) onVideoMeta?.(d);
+            }}
             onError={() => setError("Nie udało się załadować wideo.")}
           />
         ) : (
