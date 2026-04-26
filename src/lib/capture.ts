@@ -122,3 +122,47 @@ export async function sampleFramesFromVideo(
 
   return frames;
 }
+
+// Próbkowanie N klatek z LIVE stream w czasie rzeczywistym (równomiernie w windowSeconds)
+export async function sampleFramesFromLive(
+  video: HTMLVideoElement,
+  sampleCount: number,
+  windowSeconds: number,
+  filterCss: string,
+  onTick?: (current: number, total: number) => void,
+  size: number = 512,
+  jpegQuality: number = 0.7,
+): Promise<SampledFrame[]> {
+  if (!video.videoWidth || !video.videoHeight) {
+    throw new Error("Live stream nie ma jeszcze wymiarów — poczekaj na ramkę.");
+  }
+  const w = video.videoWidth;
+  const h = video.videoHeight;
+  const scale = Math.min(1, size / Math.max(w, h));
+  const cw = Math.max(64, Math.round(w * scale));
+  const ch = Math.max(64, Math.round(h * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cw;
+  canvas.height = ch;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Brak kontekstu canvas");
+
+  const frames: SampledFrame[] = [];
+  const intervalMs = (windowSeconds * 1000) / sampleCount;
+  const startedAt = performance.now();
+
+  for (let i = 0; i < sampleCount; i++) {
+    onTick?.(i + 1, sampleCount);
+    ctx.filter = filterCss || "none";
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(video, 0, 0, cw, ch);
+    const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
+    const ts = (performance.now() - startedAt) / 1000;
+    frames.push({ dataUrl, timestamp: Number(ts.toFixed(2)) });
+    if (i < sampleCount - 1) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+  return frames;
+}

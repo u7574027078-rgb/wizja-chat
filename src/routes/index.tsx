@@ -9,6 +9,7 @@ import { FILTER_PRESETS, type FilterPreset } from "@/lib/presets";
 import type { RegionOption } from "@/lib/regions";
 import { captureFrameAsDataURL, sampleFramesFromVideo, type SampledFrame } from "@/lib/capture";
 import { analyzeFrame, analyzeSequence } from "@/lib/analyze.functions";
+import { LiveStudio } from "@/components/LiveStudio";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -60,6 +61,7 @@ function HomePage() {
   const [sequence, setSequence] = useState<SequenceState>({ status: "idle" });
   const [showConsent, setShowConsent] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
+  const [liveMode, setLiveMode] = useState(false);
   const sourceRef = useRef<HTMLVideoElement | HTMLImageElement | null>(null);
 
   function reset() {
@@ -200,6 +202,14 @@ function HomePage() {
     return "Analiza 8 klatek z całego nagrania. Ocenia dynamikę przepływu Dopplera, zmiany w cyklu serca, charakter krzywej. Trwa 30-60 sek. Idealne dla badań Dopplerowskich.";
   })();
 
+  if (liveMode) {
+    return (
+      <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
+        <LiveStudio onExit={() => setLiveMode(false)} />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
       {/* Header */}
@@ -230,7 +240,7 @@ function HomePage() {
 
       {!uploaded && (
         <div className="space-y-4">
-          <UploadDropzone onUpload={setUploaded} />
+          <UploadDropzone onUpload={setUploaded} onLive={() => setLiveMode(true)} />
           <Disclaimer variant="strong" />
         </div>
       )}
