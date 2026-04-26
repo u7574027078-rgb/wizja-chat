@@ -202,6 +202,14 @@ function HomePage() {
     return "Analiza 8 klatek z całego nagrania. Ocenia dynamikę przepływu Dopplera, zmiany w cyklu serca, charakter krzywej. Trwa 30-60 sek. Idealne dla badań Dopplerowskich.";
   })();
 
+  if (liveMode) {
+    return (
+      <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
+        <LiveStudio onExit={() => setLiveMode(false)} />
+      </main>
+    );
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
       {/* Header */}
@@ -232,7 +240,7 @@ function HomePage() {
 
       {!uploaded && (
         <div className="space-y-4">
-          <UploadDropzone onUpload={setUploaded} />
+          <UploadDropzone onUpload={setUploaded} onLive={() => setLiveMode(true)} />
           <Disclaimer variant="strong" />
         </div>
       )}
