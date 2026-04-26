@@ -9,6 +9,7 @@ import { FILTER_PRESETS, type FilterPreset } from "@/lib/presets";
 import type { RegionOption } from "@/lib/regions";
 import { captureFrameAsDataURL, sampleFramesFromVideo, type SampledFrame } from "@/lib/capture";
 import { analyzeFrame, analyzeSequence } from "@/lib/analyze.functions";
+import { LiveStudio } from "@/components/LiveStudio";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -60,6 +61,7 @@ function HomePage() {
   const [sequence, setSequence] = useState<SequenceState>({ status: "idle" });
   const [showConsent, setShowConsent] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
+  const [liveMode, setLiveMode] = useState(false);
   const sourceRef = useRef<HTMLVideoElement | HTMLImageElement | null>(null);
 
   function reset() {
