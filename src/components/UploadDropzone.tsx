@@ -11,10 +11,11 @@ interface UploadedFile {
 
 interface Props {
   onUpload: (uploaded: UploadedFile) => void;
+  onLive?: () => void;
 }
 
 // Strefa wgrywania pliku — wideo / DICOM / obraz
-export function UploadDropzone({ onUpload }: Props) {
+export function UploadDropzone({ onUpload, onLive }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -46,7 +47,7 @@ export function UploadDropzone({ onUpload }: Props) {
         handleFiles(e.dataTransfer.files);
       }}
       className={cn(
-        "relative grid grid-cols-1 gap-4 rounded-2xl border-2 border-dashed p-8 transition-colors md:grid-cols-2",
+        "relative grid grid-cols-1 gap-4 rounded-2xl border-2 border-dashed p-8 transition-colors md:grid-cols-3",
         dragOver ? "border-primary bg-primary/5" : "border-border bg-card/40",
       )}
     >
@@ -87,6 +88,19 @@ export function UploadDropzone({ onUpload }: Props) {
         <h3 className="mb-1 text-lg font-semibold">Wgraj DICOM naczyniowy</h3>
         <p className="text-xs text-muted-foreground">.dcm — Cornerstone3D (lazy)</p>
       </button>
+
+      {onLive && (
+        <button
+          type="button"
+          onClick={onLive}
+          title="Podłącz aparat USG przez HDMI → USB capture card → OBS Virtual Camera. Aplikacja będzie czytać obraz na żywo i analizować klatki AI bez nagrywania pliku."
+          className="group flex flex-col items-center justify-center rounded-xl border border-border bg-secondary/40 p-8 text-center transition-all hover:border-primary hover:bg-secondary"
+        >
+          <div className="mb-3 text-4xl">📡</div>
+          <h3 className="mb-1 text-lg font-semibold">Live streaming (kamera / capture card)</h3>
+          <p className="text-xs text-muted-foreground">OBS Virtual Camera, webcam, USB capture</p>
+        </button>
+      )}
 
       <p className="col-span-full text-center text-xs text-muted-foreground">
         Możesz też przeciągnąć plik bezpośrednio w to pole.
