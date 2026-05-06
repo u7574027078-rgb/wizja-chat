@@ -71,6 +71,7 @@ function HomePage() {
     setRegion(null);
     setFilter(FILTER_PRESETS[0]);
     setAnalysis({ status: "idle" });
+    setExternal({ status: "idle" });
     setSequence({ status: "idle" });
     setVideoDuration(null);
   }
