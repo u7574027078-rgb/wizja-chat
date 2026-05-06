@@ -104,7 +104,45 @@ function HomePage() {
     }
   }
 
-  // Główna funkcja analizy sekwencji
+  // Wywołanie Edge Function analyze-usg (Grok lub Claude)
+  async function handleExternalAnalyze(provider: "grok" | "claude") {
+    if (!uploaded || !region) return;
+    if (uploaded.kind === "dicom") {
+      setExternal({ status: "error", message: "DICOM-only nieobsługiwane przez vision API. Wgraj wideo/obraz." });
+      return;
+    }
+    const source = sourceRef.current;
+    if (!source) {
+      setExternal({ status: "error", message: "Źródło obrazu nie jest gotowe." });
+      return;
+    }
+    setExternal({ status: "loading", provider });
+    try {
+      const dataUrl = await captureFrameAsDataURL(source, filter.filter, 1280);
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-usg`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        },
+        body: JSON.stringify({
+          provider,
+          category: region.category,
+          regionLabel: region.label,
+          imageBase64: dataUrl,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setExternal({ status: "error", message: json.error ?? `HTTP ${res.status}`, provider });
+      } else {
+        setExternal({ status: "ok", markdown: json.markdown, provider });
+      }
+    } catch (e) {
+      setExternal({ status: "error", message: e instanceof Error ? e.message : "Nieznany błąd", provider });
+    }
+  }
   async function runSequenceAnalysis() {
     if (!uploaded || !region) return;
     const video = sourceRef.current;
