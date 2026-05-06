@@ -58,6 +58,7 @@ function HomePage() {
   const [region, setRegion] = useState<RegionOption | null>(null);
   const [filter, setFilter] = useState<FilterPreset>(FILTER_PRESETS[0]);
   const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" });
+  const [external, setExternal] = useState<AnalysisState & { provider?: "grok" | "claude" }>({ status: "idle" });
   const [sequence, setSequence] = useState<SequenceState>({ status: "idle" });
   const [showConsent, setShowConsent] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
@@ -70,6 +71,7 @@ function HomePage() {
     setRegion(null);
     setFilter(FILTER_PRESETS[0]);
     setAnalysis({ status: "idle" });
+    setExternal({ status: "idle" });
     setSequence({ status: "idle" });
     setVideoDuration(null);
   }
@@ -102,7 +104,45 @@ function HomePage() {
     }
   }
 
-  // Główna funkcja analizy sekwencji
+  // Wywołanie Edge Function analyze-usg (Grok lub Claude)
+  async function handleExternalAnalyze(provider: "grok" | "claude") {
+    if (!uploaded || !region) return;
+    if (uploaded.kind === "dicom") {
+      setExternal({ status: "error", message: "DICOM-only nieobsługiwane przez vision API. Wgraj wideo/obraz." });
+      return;
+    }
+    const source = sourceRef.current;
+    if (!source) {
+      setExternal({ status: "error", message: "Źródło obrazu nie jest gotowe." });
+      return;
+    }
+    setExternal({ status: "loading", provider });
+    try {
+      const dataUrl = await captureFrameAsDataURL(source, filter.filter, 1280);
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-usg`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        },
+        body: JSON.stringify({
+          provider,
+          category: region.category,
+          regionLabel: region.label,
+          imageBase64: dataUrl,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setExternal({ status: "error", message: json.error ?? `HTTP ${res.status}`, provider });
+      } else {
+        setExternal({ status: "ok", markdown: json.markdown, provider });
+      }
+    } catch (e) {
+      setExternal({ status: "error", message: e instanceof Error ? e.message : "Nieznany błąd", provider });
+    }
+  }
   async function runSequenceAnalysis() {
     if (!uploaded || !region) return;
     const video = sourceRef.current;
@@ -288,6 +328,24 @@ function HomePage() {
                         ? `AI analizuje sekwencję… ${sequence.elapsed}s`
                         : "🎬 Analizuj sekwencję wideo (AI)"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleExternalAnalyze("grok")}
+                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
+                  title="Wysyła obecną klatkę do Grok Vision (xAI) przez Edge Function"
+                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {external.status === "loading" && external.provider === "grok" ? "Grok analizuje…" : "🛰 Grok"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExternalAnalyze("claude")}
+                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
+                  title="Wysyła obecną klatkę do Claude (Anthropic) przez Edge Function"
+                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {external.status === "loading" && external.provider === "claude" ? "Claude analizuje…" : "🧠 Claude"}
+                </button>
               </div>
               {sequence.status === "sampling" && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
@@ -320,7 +378,29 @@ function HomePage() {
               </div>
             )}
 
-            {/* Wynik sekwencji */}
+            {/* Wynik analizy zewnętrznej (Grok / Claude) */}
+            {external.status === "loading" && (
+              <div className="rounded-xl border border-border bg-card p-6 text-center">
+                <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <p className="text-sm text-muted-foreground">
+                  {external.provider === "claude" ? "Claude" : "Grok"} analizuje klatkę…
+                </p>
+              </div>
+            )}
+            {external.status === "error" && (
+              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
+                <strong className="text-destructive">Błąd {external.provider ?? "AI"}:</strong> {external.message}
+              </div>
+            )}
+            {external.status === "ok" && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                  {external.provider === "claude" ? "🧠 Analiza Claude" : "🛰 Analiza Grok"}
+                </h3>
+                <AnalysisResult markdown={external.markdown} />
+              </div>
+            )}
+
             {sequence.status === "error" && (
               <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
                 <strong className="text-destructive">Błąd sekwencji:</strong> {sequence.message}
