@@ -58,6 +58,7 @@ function HomePage() {
   const [region, setRegion] = useState<RegionOption | null>(null);
   const [filter, setFilter] = useState<FilterPreset>(FILTER_PRESETS[0]);
   const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" });
+  const [external, setExternal] = useState<AnalysisState & { provider?: "grok" | "claude" }>({ status: "idle" });
   const [sequence, setSequence] = useState<SequenceState>({ status: "idle" });
   const [showConsent, setShowConsent] = useState(false);
   const [videoDuration, setVideoDuration] = useState<number | null>(null);
