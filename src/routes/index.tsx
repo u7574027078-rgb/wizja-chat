@@ -378,7 +378,29 @@ function HomePage() {
               </div>
             )}
 
-            {/* Wynik sekwencji */}
+            {/* Wynik analizy zewnętrznej (Grok / Claude) */}
+            {external.status === "loading" && (
+              <div className="rounded-xl border border-border bg-card p-6 text-center">
+                <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                <p className="text-sm text-muted-foreground">
+                  {external.provider === "claude" ? "Claude" : "Grok"} analizuje klatkę…
+                </p>
+              </div>
+            )}
+            {external.status === "error" && (
+              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
+                <strong className="text-destructive">Błąd {external.provider ?? "AI"}:</strong> {external.message}
+              </div>
+            )}
+            {external.status === "ok" && (
+              <div className="space-y-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+                  {external.provider === "claude" ? "🧠 Analiza Claude" : "🛰 Analiza Grok"}
+                </h3>
+                <AnalysisResult markdown={external.markdown} />
+              </div>
+            )}
+
             {sequence.status === "error" && (
               <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
                 <strong className="text-destructive">Błąd sekwencji:</strong> {sequence.message}
