@@ -328,6 +328,24 @@ function HomePage() {
                         ? `AI analizuje sekwencję… ${sequence.elapsed}s`
                         : "🎬 Analizuj sekwencję wideo (AI)"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleExternalAnalyze("grok")}
+                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
+                  title="Wysyła obecną klatkę do Grok Vision (xAI) przez Edge Function"
+                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {external.status === "loading" && external.provider === "grok" ? "Grok analizuje…" : "🛰 Grok"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExternalAnalyze("claude")}
+                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
+                  title="Wysyła obecną klatkę do Claude (Anthropic) przez Edge Function"
+                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {external.status === "loading" && external.provider === "claude" ? "Claude analizuje…" : "🧠 Claude"}
+                </button>
               </div>
               {sequence.status === "sampling" && (
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
