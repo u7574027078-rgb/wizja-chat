@@ -1,0 +1,5 @@
+{
+  „przepisuje”: [
+    { „żródło”: "/(.*)", „miejsce docelowe”: „/index.html" }
+  ]
+}
