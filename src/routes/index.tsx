@@ -1,520 +1,338 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState } from "react";
-import { UploadDropzone } from "@/components/UploadDropzone";
-import { RegionSelector } from "@/components/RegionSelector";
-import { Viewport } from "@/components/Viewport";
-import { AnalysisResult } from "@/components/AnalysisResult";
-import { Disclaimer } from "@/components/Disclaimer";
-import { FILTER_PRESETS, type FilterPreset } from "@/lib/presets";
-import type { RegionOption } from "@/lib/regions";
-import { captureFrameAsDataURL, sampleFramesFromVideo, type SampledFrame } from "@/lib/capture";
-import { analyzeFrame, analyzeSequence } from "@/lib/analyze.functions";
-import { LiveStudio } from "@/components/LiveStudio";
+import { createServerFn } from "@tanstack/start";
+import { useState, useRef, useEffect } from "react";
 
-export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Vascular Insights — viewer i AI dla USG naczyniowych" },
-      {
-        name: "description",
-        content:
-          "Analizator AI dla USG tętnic szyjnych, TCD/TCCD i struktur mózgu. Narzędzie wspomagające — nie wyrób medyczny.",
+// ─── Server function: calls Claude API securely ───────────────────────────────
+const askClaude = createServerFn({ method: "POST" })
+  .validator(
+    (data: { messages: Array<{ role: string; content: string }> }) => data
+  )
+  .handler(async ({ data }) => {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return {
+        error:
+          "Brak klucza API. Dodaj zmienną środowiskową ANTHROPIC_API_KEY w ustawieniach Vercel.",
+      };
+    }
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
       },
-      { property: "og:title", content: "Vascular Insights" },
-      {
-        property: "og:description",
-        content: "Viewer i analizator AI dla USG naczyniowych: carotid, TCD/TCCD, struktury mózgu.",
-      },
-    ],
-  }),
-  component: HomePage,
-});
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        system:
+          "Jesteś przyjaznym, empatycznym asystentem AI o imieniu Wizja. Odpowiadaj po polsku w naturalny, ciepły sposób. Bądź pomocny, konkretny i zwięzły.",
+        messages: data.messages,
+      }),
+    });
+    if (!response.ok) {
+      return { error: `Błąd API: ${response.status} – ${response.statusText}` };
+    }
+    const result = (await response.json()) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    const text = result.content.find((b) => b.type === "text")?.text ?? "";
+    return { text };
+  });
 
-interface UploadedFile {
-  file: File;
-  url: string;
-  kind: "video" | "image" | "dicom";
+// ─── Route ────────────────────────────────────────────────────────────────────
+export const Route = createFileRoute("/")(
+  { component: ChatPage }
+);
+
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
 }
 
-type AnalysisState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ok"; markdown: string }
-  | { status: "error"; message: string };
+const SUGGESTIONS = [
+  "Jak mogę poprawić swoje samopoczucie?",
+  "Wyjaśnij mi coś trudnego prostymi słowami",
+  "Pomóż mi zaplanować dzień",
+  "Co wiesz o zdrowym stylu życia?",
+];
 
-type SequenceState =
-  | { status: "idle" }
-  | { status: "sampling"; current: number; total: number }
-  | { status: "uploading" }
-  | { status: "analyzing"; elapsed: number }
-  | { status: "ok"; markdown: string; frames: SampledFrame[]; duration: number }
-  | { status: "error"; message: string };
+function ChatPage() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-const SAMPLE_COUNT = 8;
-const SEQUENCE_CONSENT_KEY = "vi.sequenceConsent";
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
-function HomePage() {
-  const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
-  const [region, setRegion] = useState<RegionOption | null>(null);
-  const [filter, setFilter] = useState<FilterPreset>(FILTER_PRESETS[0]);
-  const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" });
-  const [external, setExternal] = useState<AnalysisState & { provider?: "grok" | "claude" }>({ status: "idle" });
-  const [sequence, setSequence] = useState<SequenceState>({ status: "idle" });
-  const [showConsent, setShowConsent] = useState(false);
-  const [videoDuration, setVideoDuration] = useState<number | null>(null);
-  const [liveMode, setLiveMode] = useState(false);
-  const sourceRef = useRef<HTMLVideoElement | HTMLImageElement | null>(null);
-
-  function reset() {
-    if (uploaded) URL.revokeObjectURL(uploaded.url);
-    setUploaded(null);
-    setRegion(null);
-    setFilter(FILTER_PRESETS[0]);
-    setAnalysis({ status: "idle" });
-    setExternal({ status: "idle" });
-    setSequence({ status: "idle" });
-    setVideoDuration(null);
-  }
-
-  async function handleAnalyze() {
-    if (!uploaded || !region) return;
-    if (uploaded.kind === "dicom") {
-      setAnalysis({
-        status: "error",
-        message: "Analiza DICOM-only wymaga pełnego viewera Cornerstone (kolejna iteracja). Wgraj wideo lub obraz.",
-      });
-      return;
-    }
-    const source = sourceRef.current;
-    if (!source) {
-      setAnalysis({ status: "error", message: "Źródło obrazu nie jest gotowe." });
-      return;
-    }
-
-    setAnalysis({ status: "loading" });
+  const sendMessage = async (text: string) => {
+    if (!text.trim() || loading) return;
+    setError(null);
+    const userMsg: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text.trim(),
+      timestamp: new Date(),
+    };
+    const updatedMessages = [...messages, userMsg];
+    setMessages(updatedMessages);
+    setInput("");
+    setLoading(true);
     try {
-      const dataUrl = await captureFrameAsDataURL(source, filter.filter, 1280);
-      const result = await analyzeFrame({
-        data: { category: region.category, regionLabel: region.label, imageBase64: dataUrl },
-      });
-      if (result.ok) setAnalysis({ status: "ok", markdown: result.markdown });
-      else setAnalysis({ status: "error", message: result.error });
-    } catch (e) {
-      setAnalysis({ status: "error", message: e instanceof Error ? e.message : "Nieznany błąd" });
-    }
-  }
-
-  // Wywołanie Edge Function analyze-usg (Grok lub Claude)
-  async function handleExternalAnalyze(provider: "grok" | "claude") {
-    if (!uploaded || !region) return;
-    if (uploaded.kind === "dicom") {
-      setExternal({ status: "error", message: "DICOM-only nieobsługiwane przez vision API. Wgraj wideo/obraz." });
-      return;
-    }
-    const source = sourceRef.current;
-    if (!source) {
-      setExternal({ status: "error", message: "Źródło obrazu nie jest gotowe." });
-      return;
-    }
-    setExternal({ status: "loading", provider });
-    try {
-      const dataUrl = await captureFrameAsDataURL(source, filter.filter, 1280);
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-usg`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-        },
-        body: JSON.stringify({
-          provider,
-          category: region.category,
-          regionLabel: region.label,
-          imageBase64: dataUrl,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) {
-        setExternal({ status: "error", message: json.error ?? `HTTP ${res.status}`, provider });
+      const history = updatedMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+      const result = await askClaude({ data: { messages: history } });
+      if ("error" in result) {
+        setError(result.error);
       } else {
-        setExternal({ status: "ok", markdown: json.markdown, provider });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: result.text,
+            timestamp: new Date(),
+          },
+        ]);
       }
-    } catch (e) {
-      setExternal({ status: "error", message: e instanceof Error ? e.message : "Nieznany błąd", provider });
+    } catch {
+      setError("Wystąpił nieoczekiwany błąd. Spróbuj ponownie.");
+    } finally {
+      setLoading(false);
+      inputRef.current?.focus();
     }
-  }
-  async function runSequenceAnalysis() {
-    if (!uploaded || !region) return;
-    const video = sourceRef.current;
-    if (!(video instanceof HTMLVideoElement)) {
-      setSequence({ status: "error", message: "Analiza sekwencji działa tylko dla wideo." });
-      return;
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
     }
-    if (!video.duration || video.duration < 2) {
-      setSequence({ status: "error", message: "Wideo musi mieć min. 2 sekundy." });
-      return;
-    }
+  };
 
-    const duration = video.duration;
-    setSequence({ status: "sampling", current: 0, total: SAMPLE_COUNT });
-
-    let frames: SampledFrame[];
-    try {
-      frames = await sampleFramesFromVideo(
-        video,
-        SAMPLE_COUNT,
-        filter.filter,
-        (current, total) => setSequence({ status: "sampling", current, total }),
-        512,
-        0.7,
-      );
-    } catch (e) {
-      setSequence({ status: "error", message: `Błąd próbkowania: ${e instanceof Error ? e.message : String(e)}` });
-      return;
-    }
-
-    setSequence({ status: "uploading" });
-
-    // Licznik czasu analizy
-    const startedAt = Date.now();
-    const tick = setInterval(() => {
-      setSequence((prev) =>
-        prev.status === "analyzing" || prev.status === "uploading"
-          ? { status: "analyzing", elapsed: Math.floor((Date.now() - startedAt) / 1000) }
-          : prev,
-      );
-    }, 1000);
-
-    try {
-      setSequence({ status: "analyzing", elapsed: 0 });
-      const result = await analyzeSequence({
-        data: {
-          category: region.category,
-          regionLabel: region.label,
-          videoDuration: duration,
-          frames: frames.map((f) => ({ dataUrl: f.dataUrl, timestamp: f.timestamp })),
-        },
-      });
-      clearInterval(tick);
-      if (result.ok) {
-        setSequence({ status: "ok", markdown: result.markdown, frames, duration });
-      } else {
-        setSequence({ status: "error", message: result.error });
-      }
-    } catch (e) {
-      clearInterval(tick);
-      setSequence({ status: "error", message: e instanceof Error ? e.message : "Nieznany błąd" });
-    }
-  }
-
-  function handleSequenceClick() {
-    if (typeof window !== "undefined" && localStorage.getItem(SEQUENCE_CONSENT_KEY) === "1") {
-      void runSequenceAnalysis();
-    } else {
-      setShowConsent(true);
-    }
-  }
-
-  function seekVideoTo(t: number) {
-    const v = sourceRef.current;
-    if (v instanceof HTMLVideoElement) {
-      try {
-        v.currentTime = t;
-      } catch { /* noop */ }
-    }
-  }
-
-  // Czy przycisk sekwencji jest dostępny
-  const seqDisabled =
-    !region ||
-    uploaded?.kind !== "video" ||
-    !videoDuration ||
-    videoDuration < 2 ||
-    sequence.status === "sampling" ||
-    sequence.status === "uploading" ||
-    sequence.status === "analyzing";
-
-  const seqTooltip = (() => {
-    if (uploaded?.kind !== "video") return "Analiza sekwencji wymaga wideo.";
-    if (!videoDuration) return "Poczekaj na załadowanie metadanych wideo.";
-    if (videoDuration < 2) return "Wideo musi mieć min. 2 sekundy.";
-    if (!region) return "Wybierz najpierw region.";
-    return "Analiza 8 klatek z całego nagrania. Ocenia dynamikę przepływu Dopplera, zmiany w cyklu serca, charakter krzywej. Trwa 30-60 sek. Idealne dla badań Dopplerowskich.";
-  })();
-
-  if (liveMode) {
-    return (
-      <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
-        <LiveStudio onExit={() => setLiveMode(false)} />
-      </main>
-    );
-  }
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+  };
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8 md:px-8 md:py-12">
-      {/* Header */}
-      <header className="mb-8 flex items-start justify-between gap-4">
-        <div>
-          <div className="mb-1 flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-primary">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary" />
-            Vascular Insights
-          </div>
-          <h1 className="text-3xl font-bold tracking-tight md:text-4xl">
-            Viewer i analizator AI <span className="text-primary">USG naczyniowych</span>
-          </h1>
-          <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            Tętnice szyjne (carotid Doppler), TCD / TCCD, struktury mózgu. Wgraj klatkę lub wideo, wybierz region,
-            uruchom analizę AI — pojedynczą klatkę lub całą sekwencję.
-          </p>
-        </div>
-        {uploaded && (
-          <button
-            type="button"
-            onClick={reset}
-            className="shrink-0 rounded-md border border-border bg-secondary px-3 py-1.5 text-sm hover:border-destructive hover:text-destructive"
-          >
-            Resetuj
-          </button>
-        )}
-      </header>
+    <>
+      <Styles />
+      <div className="chat-root">
+        <div className="bg-orb bg-orb-1" />
+        <div className="bg-orb bg-orb-2" />
 
-      {!uploaded && (
-        <div className="space-y-4">
-          <UploadDropzone onUpload={setUploaded} onLive={() => setLiveMode(true)} />
-          <Disclaimer variant="strong" />
-        </div>
-      )}
-
-      {uploaded && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
-          <div className="space-y-4">
-            <Viewport
-              fileUrl={uploaded.url}
-              fileKind={uploaded.kind}
-              fileName={uploaded.file.name}
-              filter={filter}
-              onFilterChange={setFilter}
-              sourceRef={sourceRef}
-              onVideoMeta={(d) => setVideoDuration(d)}
-            />
-
-            {/* Akcje analizy */}
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3">
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">Wybrany region</div>
-                <div className="truncate font-medium">{region ? region.label : "— wybierz po prawej —"}</div>
+        <header className="chat-header">
+          <div className="header-inner">
+            <div className="logo-group">
+              <div className="logo-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                  <path d="M8 12h.01M12 12h.01M16 12h.01" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                </svg>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleAnalyze}
-                  disabled={!region || analysis.status === "loading" || uploaded.kind === "dicom"}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {analysis.status === "loading" ? "Analizuję…" : "🤖 Analizuj obecną klatkę"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSequenceClick}
-                  disabled={seqDisabled}
-                  title={seqTooltip}
-                  className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {sequence.status === "sampling"
-                    ? `Pobieranie klatki ${sequence.current}/${sequence.total}…`
-                    : sequence.status === "uploading"
-                      ? "Wysyłanie do AI…"
-                      : sequence.status === "analyzing"
-                        ? `AI analizuje sekwencję… ${sequence.elapsed}s`
-                        : "🎬 Analizuj sekwencję wideo (AI)"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleExternalAnalyze("grok")}
-                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
-                  title="Wysyła obecną klatkę do Grok Vision (xAI) przez Edge Function"
-                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {external.status === "loading" && external.provider === "grok" ? "Grok analizuje…" : "🛰 Grok"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleExternalAnalyze("claude")}
-                  disabled={!region || external.status === "loading" || uploaded.kind === "dicom"}
-                  title="Wysyła obecną klatkę do Claude (Anthropic) przez Edge Function"
-                  className="rounded-md border border-border bg-secondary px-4 py-2 text-sm font-semibold transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {external.status === "loading" && external.provider === "claude" ? "Claude analizuje…" : "🧠 Claude"}
-                </button>
+              <div>
+                <h1 className="logo-title">Wizja AI</h1>
+                <p className="logo-subtitle">Twój osobisty asystent</p>
               </div>
-              {sequence.status === "sampling" && (
-                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                  <div
-                    className="h-full bg-accent transition-all"
-                    style={{ width: `${(sequence.current / sequence.total) * 100}%` }}
-                  />
-                </div>
-              )}
             </div>
-
-            {/* Wynik pojedynczej klatki */}
-            {analysis.status === "loading" && (
-              <div className="rounded-xl border border-border bg-card p-6 text-center">
-                <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <p className="text-sm text-muted-foreground">Analiza AI w toku — interpretacja klatki…</p>
-              </div>
+            {messages.length > 0 && (
+              <button className="clear-btn" onClick={() => setMessages([])}>
+                + Nowa rozmowa
+              </button>
             )}
-            {analysis.status === "error" && (
-              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
-                <strong className="text-destructive">Błąd:</strong> {analysis.message}
-              </div>
-            )}
-            {analysis.status === "ok" && (
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                  🤖 Analiza pojedynczej klatki
-                </h3>
-                <AnalysisResult markdown={analysis.markdown} />
-              </div>
-            )}
-
-            {/* Wynik analizy zewnętrznej (Grok / Claude) */}
-            {external.status === "loading" && (
-              <div className="rounded-xl border border-border bg-card p-6 text-center">
-                <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                <p className="text-sm text-muted-foreground">
-                  {external.provider === "claude" ? "Claude" : "Grok"} analizuje klatkę…
-                </p>
-              </div>
-            )}
-            {external.status === "error" && (
-              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
-                <strong className="text-destructive">Błąd {external.provider ?? "AI"}:</strong> {external.message}
-              </div>
-            )}
-            {external.status === "ok" && (
-              <div className="space-y-3">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                  {external.provider === "claude" ? "🧠 Analiza Claude" : "🛰 Analiza Grok"}
-                </h3>
-                <AnalysisResult markdown={external.markdown} />
-              </div>
-            )}
-
-            {sequence.status === "error" && (
-              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive-foreground">
-                <strong className="text-destructive">Błąd sekwencji:</strong> {sequence.message}
-              </div>
-            )}
-            {(sequence.status === "uploading" || sequence.status === "analyzing") && (
-              <div className="rounded-xl border border-accent/50 bg-accent/10 p-6 text-center">
-                <div className="mx-auto mb-2 h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-                <p className="text-sm text-foreground/90">
-                  {sequence.status === "uploading"
-                    ? "Wysyłanie 8 klatek do modelu…"
-                    : `AI analizuje sekwencję — multi-image vision (gemini-2.5-pro)… ${sequence.elapsed}s`}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">Może zająć 30–90 sekund.</p>
-              </div>
-            )}
-            {sequence.status === "ok" && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-                    🎬 Analiza sekwencji ({sequence.frames.length} klatek z {sequence.duration.toFixed(1)}s)
-                  </h3>
-                </div>
-                <AnalysisResult markdown={sequence.markdown} />
-
-                {/* Miniaturki kluczowych klatek */}
-                <div>
-                  <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">
-                    Kluczowe klatki (kliknij aby przewinąć wideo)
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {pickKeyFrames(sequence.frames).map((f, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => seekVideoTo(f.timestamp)}
-                        className="group overflow-hidden rounded-md border border-border bg-black transition-all hover:border-accent"
-                      >
-                        <img src={f.dataUrl} alt={`klatka @ ${f.timestamp}s`} className="aspect-video w-full object-contain" />
-                        <div className="bg-secondary/80 px-2 py-1 text-left text-[10px] font-mono text-muted-foreground group-hover:text-accent">
-                          t = {f.timestamp.toFixed(2)}s
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <Disclaimer variant="strong">
-                  ⚠ Analiza oparta na próbce {sequence.frames.length} klatek z całego nagrania ({sequence.duration.toFixed(1)}s).
-                  Może przegapić szybkie zdarzenia (np. pojedyncze HITS w TCD). Nie zastępuje pełnej oceny ekspertem.
-                </Disclaimer>
-              </div>
-            )}
-
-            {analysis.status === "ok" && sequence.status !== "ok" && <Disclaimer variant="strong" />}
           </div>
+        </header>
 
-          <aside className="lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto lg:pr-2">
-            <RegionSelector selectedId={region?.id} onSelect={setRegion} />
-          </aside>
-        </div>
-      )}
+        <main className="chat-main">
+          {messages.length === 0 ? (
+            <Welcome onSuggestion={sendMessage} />
+          ) : (
+            <div className="messages-list">
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} />
+              ))}
+              {loading && <TypingIndicator />}
+              {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </main>
 
-      {/* Modal pierwszej zgody */}
-      {showConsent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog">
-          <div className="max-w-md rounded-xl border border-border bg-card p-6 shadow-xl">
-            <h3 className="mb-2 text-lg font-semibold">Analiza sekwencji wideo</h3>
-            <p className="text-sm text-muted-foreground">
-              Analiza wysyła <strong className="text-foreground">8 klatek</strong> do modelu AI (gemini-2.5-pro). Zużywa
-              ok. <strong className="text-foreground">8× więcej kredytów</strong> niż analiza pojedynczej klatki i może
-              trwać 30–90 sekund. Kontynuować?
-            </p>
-            <div className="mt-5 flex flex-wrap justify-end gap-2">
+        <footer className="input-bar">
+          <div className="input-inner">
+            <div className="input-wrapper">
+              <textarea
+                ref={inputRef}
+                className="chat-input"
+                placeholder="Napisz wiadomość… (Enter aby wysłać)"
+                value={input}
+                onChange={handleChange}
+                onKeyDown={handleKeyDown}
+                rows={1}
+                disabled={loading}
+              />
               <button
-                type="button"
-                onClick={() => setShowConsent(false)}
-                className="rounded-md border border-border bg-secondary px-3 py-1.5 text-sm hover:bg-secondary/80"
+                className={`send-btn ${loading || !input.trim() ? "send-btn-disabled" : "send-btn-active"}`}
+                onClick={() => sendMessage(input)}
+                disabled={loading || !input.trim()}
               >
-                Anuluj
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowConsent(false);
-                  void runSequenceAnalysis();
-                }}
-                className="rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground hover:opacity-90"
-              >
-                Tak
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (typeof window !== "undefined") localStorage.setItem(SEQUENCE_CONSENT_KEY, "1");
-                  setShowConsent(false);
-                  void runSequenceAnalysis();
-                }}
-                className="rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground hover:opacity-90"
-              >
-                Tak, nie pytaj więcej
+                {loading ? (
+                  <span className="send-spinner" />
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                    <path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
               </button>
             </div>
+            <p className="input-hint">Shift+Enter dla nowej linii · Enter aby wysłać</p>
           </div>
-        </div>
-      )}
-    </main>
+        </footer>
+      </div>
+    </>
   );
 }
 
-// 4 reprezentatywne klatki: ~0%, ~33%, ~66%, ~100%
-function pickKeyFrames(frames: SampledFrame[]): SampledFrame[] {
-  if (frames.length <= 4) return frames;
-  const last = frames.length - 1;
-  const indices = [0, Math.round(last * 0.33), Math.round(last * 0.66), last];
-  return Array.from(new Set(indices)).map((i) => frames[i]);
+function Welcome({ onSuggestion }: { onSuggestion: (s: string) => void }) {
+  return (
+    <div className="welcome">
+      <div className="welcome-avatar">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+          <path d="M8 12h.01M12 12h.01M16 12h.01" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+        </svg>
+      </div>
+      <h2 className="welcome-title">Cześć! Jestem Wizja 👋</h2>
+      <p className="welcome-desc">
+        Twój asystent AI gotowy do pomocy. Możesz zapytać mnie o wszystko —
+        wyjaśnienia, pomysły, planowanie, a nawet zwykłą rozmowę.
+      </p>
+      <div className="suggestions-grid">
+        {SUGGESTIONS.map((s) => (
+          <button key={s} className="suggestion-chip" onClick={() => onSuggestion(s)}>
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: Message }) {
+  const isUser = message.role === "user";
+  return (
+    <div className={`msg-row ${isUser ? "msg-row-user" : "msg-row-ai"}`}>
+      {!isUser && (
+        <div className="ai-avatar">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path d="M8 12h.01M12 12h.01M16 12h.01" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+          </svg>
+        </div>
+      )}
+      <div className={`msg-bubble ${isUser ? "msg-user" : "msg-ai"}`}>
+        <p className="msg-text">{message.content}</p>
+        <span className="msg-time">
+          {message.timestamp.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit" })}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="msg-row msg-row-ai">
+      <div className="ai-avatar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+          <path d="M8 12h.01M12 12h.01M16 12h.01" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+        </svg>
+      </div>
+      <div className="msg-bubble msg-ai typing-bubble">
+        <span className="dot" /><span className="dot" /><span className="dot" />
+      </div>
+    </div>
+  );
+}
+
+function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div className="error-banner">
+      <span>⚠ {message}</span>
+      <button onClick={onDismiss} className="error-dismiss">✕</button>
+    </div>
+  );
+}
+
+function Styles() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600&family=DM+Sans:wght@300;400;500&display=swap');
+      *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+      .chat-root{font-family:'DM Sans',sans-serif;min-height:100dvh;display:flex;flex-direction:column;background:#f0f4ff;position:relative;overflow:hidden}
+      .bg-orb{position:fixed;border-radius:50%;filter:blur(90px);opacity:.3;pointer-events:none;z-index:0}
+      .bg-orb-1{width:520px;height:520px;background:radial-gradient(circle,#a5b4fc,#818cf8);top:-150px;right:-120px}
+      .bg-orb-2{width:420px;height:420px;background:radial-gradient(circle,#6ee7b7,#34d399);bottom:40px;left:-100px}
+      .chat-header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.82);backdrop-filter:blur(20px);border-bottom:1px solid rgba(148,163,184,.15)}
+      .header-inner{max-width:720px;margin:0 auto;padding:14px 20px;display:flex;align-items:center;justify-content:space-between}
+      .logo-group{display:flex;align-items:center;gap:12px}
+      .logo-icon{width:44px;height:44px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:14px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(99,102,241,.4)}
+      .logo-title{font-family:'Sora',sans-serif;font-size:17px;font-weight:600;color:#1e1b4b;letter-spacing:-.3px}
+      .logo-subtitle{font-size:12px;color:#64748b}
+      .clear-btn{padding:7px 16px;border-radius:20px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);color:#6366f1;font-size:13px;font-weight:500;cursor:pointer;transition:all .2s;font-family:inherit}
+      .clear-btn:hover{background:rgba(99,102,241,.16)}
+      .chat-main{flex:1;overflow-y:auto;position:relative;z-index:1;padding:24px 20px 8px}
+      .messages-list{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+      .welcome{max-width:520px;margin:44px auto 0;text-align:center;animation:fadeUp .5s ease both}
+      .welcome-avatar{width:76px;height:76px;margin:0 auto 22px;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:26px;display:flex;align-items:center;justify-content:center;box-shadow:0 10px 28px rgba(99,102,241,.45)}
+      .welcome-title{font-family:'Sora',sans-serif;font-size:27px;font-weight:600;color:#1e1b4b;margin-bottom:12px}
+      .welcome-desc{font-size:15px;color:#64748b;line-height:1.65;margin-bottom:32px}
+      .suggestions-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+      .suggestion-chip{padding:13px 16px;border-radius:14px;background:white;border:1px solid rgba(148,163,184,.22);font-size:13.5px;font-weight:500;color:#374151;cursor:pointer;text-align:left;transition:all .2s;line-height:1.4;font-family:inherit;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+      .suggestion-chip:hover{border-color:#6366f1;color:#6366f1;transform:translateY(-2px);box-shadow:0 6px 18px rgba(99,102,241,.18)}
+      .msg-row{display:flex;align-items:flex-end;gap:10px;animation:fadeUp .3s ease both}
+      .msg-row-user{flex-direction:row-reverse}
+      .ai-avatar{width:32px;height:32px;flex-shrink:0;background:linear-gradient(135deg,#6366f1,#8b5cf6);border-radius:10px;display:flex;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(99,102,241,.3)}
+      .msg-bubble{max-width:75%;padding:12px 16px;border-radius:18px}
+      .msg-user{background:linear-gradient(135deg,#6366f1,#7c3aed);border-radius:18px 18px 4px 18px;box-shadow:0 4px 14px rgba(99,102,241,.3)}
+      .msg-ai{background:white;border-radius:18px 18px 18px 4px;box-shadow:0 2px 10px rgba(0,0,0,.07);border:1px solid rgba(148,163,184,.12)}
+      .msg-text{font-size:14.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+      .msg-user .msg-text{color:white}
+      .msg-ai .msg-text{color:#1e293b}
+      .msg-time{display:block;font-size:10.5px;margin-top:6px;opacity:.5}
+      .msg-user .msg-time{color:white;text-align:right}
+      .msg-ai .msg-time{color:#94a3b8}
+      .typing-bubble{display:flex;align-items:center;gap:5px;padding:16px 18px}
+      .dot{width:7px;height:7px;border-radius:50%;background:#a5b4fc;animation:bounce 1.2s infinite ease-in-out}
+      .dot:nth-child(2){animation-delay:.2s}
+      .dot:nth-child(3){animation-delay:.4s}
+      .error-banner{display:flex;align-items:center;gap:10px;max-width:720px;margin:0 auto;padding:12px 16px;border-radius:12px;background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;font-size:13.5px}
+      .error-dismiss{margin-left:auto;background:none;border:none;color:#b91c1c;cursor:pointer;font-size:14px;opacity:.7}
+      .error-dismiss:hover{opacity:1}
+      .input-bar{position:sticky;bottom:0;z-index:10;background:rgba(240,244,255,.88);backdrop-filter:blur(20px);border-top:1px solid rgba(148,163,184,.12);padding:14px 20px 20px}
+      .input-inner{max-width:720px;margin:0 auto}
+      .input-wrapper{display:flex;align-items:flex-end;gap:10px;background:white;border-radius:20px;padding:8px 8px 8px 18px;border:1.5px solid rgba(148,163,184,.2);box-shadow:0 4px 20px rgba(0,0,0,.08);transition:border-color .2s,box-shadow .2s}
+      .input-wrapper:focus-within{border-color:#6366f1;box-shadow:0 4px 20px rgba(99,102,241,.15)}
+      .chat-input{flex:1;border:none;outline:none;resize:none;font-size:14.5px;font-family:inherit;background:transparent;color:#1e293b;line-height:1.55;min-height:24px;max-height:160px;padding:4px 0}
+      .chat-input::placeholder{color:#94a3b8}
+      .chat-input:disabled{opacity:.6}
+      .send-btn{width:42px;height:42px;border-radius:14px;border:none;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .2s}
+      .send-btn-active{background:linear-gradient(135deg,#6366f1,#7c3aed);color:white;box-shadow:0 4px 12px rgba(99,102,241,.4)}
+      .send-btn-active:hover{transform:scale(1.07)}
+      .send-btn-disabled{background:#f1f5f9;color:#cbd5e1;cursor:not-allowed}
+      .send-spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite;display:block}
+      .input-hint{font-size:11px;color:#94a3b8;text-align:center;margin-top:8px}
+      @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+      @keyframes bounce{0%,80%,100%{transform:translateY(0)}40%{transform:translateY(-7px)}}
+      @keyframes spin{to{transform:rotate(360deg)}}
+      @media(max-width:500px){.suggestions-grid{grid-template-columns:1fr}.msg-bubble{max-width:90%}.welcome-title{font-size:22px}}
+    `}</style>
+  );
 }

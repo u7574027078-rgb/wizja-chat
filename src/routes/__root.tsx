@@ -1,25 +1,15 @@
-import { Outlet, Link, createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
+import { Outlet, createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 
 import appCss from "../styles.css?url";
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          The page you're looking for doesn't exist or has been moved.
-        </p>
-        <div className="mt-6">
-          <Link
-            to="/"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-          >
-            Go home
-          </Link>
-        </div>
-      </div>
+    <div style={{ fontFamily: "system-ui", textAlign: "center", padding: "80px 20px" }}>
+      <h1 style={{ fontSize: "72px", fontWeight: "700", color: "#1e1b4b" }}>404</h1>
+      <p style={{ color: "#64748b", marginTop: "8px" }}>Strona nie istnieje.</p>
+      <a href="/" style={{ display: "inline-block", marginTop: "24px", padding: "10px 24px", background: "#6366f1", color: "white", borderRadius: "10px", textDecoration: "none", fontSize: "14px" }}>
+        Wróć do strony głównej
+      </a>
     </div>
   );
 }
@@ -29,21 +19,10 @@ export const Route = createRootRoute({
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Vascular Insights" },
-      { name: "description", content: "Viewer i analizator AI dla USG naczyniowych" },
-      { name: "author", content: "Vascular Insights" },
-      { property: "og:title", content: "Vascular Insights" },
-      { property: "og:description", content: "Viewer i analizator AI dla USG naczyniowych" },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
+      { title: "Wizja AI – Twój asystent" },
+      { name: "description", content: "Wizja AI – inteligentny asystent gotowy do pomocy" },
     ],
-    links: [
-      {
-        rel: "stylesheet",
-        href: appCss,
-      },
-    ],
+    links: [{ rel: "stylesheet", href: appCss }],
   }),
   shellComponent: RootShell,
   component: RootComponent,
@@ -52,11 +31,11 @@ export const Route = createRootRoute({
 
 function RootShell({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="pl">
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body style={{ margin: 0 }}>
         {children}
         <Scripts />
       </body>
